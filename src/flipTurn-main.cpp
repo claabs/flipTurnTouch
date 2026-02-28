@@ -23,17 +23,16 @@
  **  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  **  ---------------------------------------------------------------------------------
  *
- *?   Purpose:  Send BLE pagnation commands to sheet music App Unreal Book
- *      Project Repository:  https://github.com/cwgstreet/flipTurn
- *      Project Wiki:        https://github.com/cwgstreet/flipTurn/wiki
+ *?   Purpose:  Send BLE pagnation commands to sheet music apps
+ *      Project Repository:  https://github.com/claabs/flipTurnTouch
  *
- * *  flipTurn foot-switch operation:
- * *     1) Short Press - Page Down
- * *     2) Double Press - Page Up
- * *     3) Press Hold (long Press):  trigger onscreen virtual keyboard in IOS, and
- * *         show battery charge status colour (green = fully charged, magenta = low charge, red = critically low charge)
+ * *  This variant uses two separate touch pads (forward/back) instead of
+ * *  a single foot-switch.  Touching the forward pad sends a page-down
+ * *  (keyboard down-arrow) and touching the back pad sends a page-up
+ * *  (keyboard up-arrow).  Battery percentage is reported via BLE; long
+ * *  presses and colour feedback have been retired in favour of the simpler
+ * *  status LED and MAX1704x monitoring.
  *
- *?   Pin-out Summary: Refer to myConstants.h for pin-out table plus also see github flipTurn wiki
  *
  *?   Credits (3rd Party Libraries, code snippets, etc)
  *    -------------------------------------------------
@@ -41,12 +40,11 @@
  *     along with license information below. We acknowledge and are grateful to these developers for their
  *     contributions to open source.
  *
- **      Project: LOLIN32-BT-Page-Turner
- **        https://github.com/raichea/LOLIN32-BT-Page-Turner
- **        https://www.thingiverse.com/thing:4880077/files
- *         Use: Overall project inspiration
- *         Copyright (c) 2021 raichea
- *         License: CC4.0 International Attribution; Creative Commons - Attribution license
+ **      Project: flipTurn
+ **        https://github.com/cwgstreet/flipTurn
+ *         Use: Overall software inspiration
+ *         Copyright (c) 2022 cwgstreet
+ *         License: (GPL-2.0) https://github.com/cwgstreet/flipTurn/blob/master/Licence-software.md
  *
  **      Project: Bounce2  https://github.com/thomasfredericks/Bounce2
  *         Use: Debouncing library for Arduino and Wiring
@@ -57,28 +55,24 @@
  *         Use: BLE Keyboard library for ESP32 devices; used to send pagnation commands to iPad
  *         Copyright (c) 2019 T-vK
  *         License (MIT / GPL3) licence discussion: https://github.com/T-vK/ESP32-BLE-Keyboard/issues/60
- *         Fork used in this project: https://github.com/cwgstreet/ESP32-BLE-Keyboard-with-EJECT
- *          Fork enables KEY_MEDIA_EJECT keypress, necessary to toggle on virtual onscreen keyboard in IOS
- *
- **      Project: Firebeetle-2-ESP32-E motion sensor https://github.com/Torxgewinde/Firebeetle-2-ESP32-E
- *         Incorporated / adapted code snippets on measuring and managing LiPo battery voltage with ESP-32
- *         Copyright (C) 2021 Tom Stöveken
- *         License (GPL2): https://github.com/Torxgewinde/Firebeetle-2-ESP32-E/blob/main/LICENSE
- *
- *?    Revisions:
- *       2023.11.27   Ver1 - code under development
+ *         Fork used in this project: https://github.com/ShocKwav3/ESP32-BLE-Keyboard
+ * 
+ **      Project: adafruit/Adafruit MAX1704X  https://github.com/adafruit/Adafruit_MAX1704X
+ *         Use: LiPo monitor (MAX1704x series)
+ *         Copyright (c) 2022 Limor Fried (Adafruit Industries)
+ *         License (BSD) https://github.com/adafruit/Adafruit_MAX1704X/blob/main/license.txt
  *
  ** *************************************************************************************/
 
 // external libraries:
-#include <Arduino.h>  // IDE requires Arduino framework to be explicitly included
-#include <BleKeyboard.h>
-#include <Bounce2.h>
+#include <Arduino.h>                        // Arduino framework
+#include <BleKeyboard.h>                      // BLE keyboard emulation
+#include <Bounce2.h>                          // button debouncing
+#include <Wire.h>                             // I2C required for fuel gauge
+#include <Adafruit_MAX1704X.h>               // LiPo monitor (MAX1704x series)
 
-// internal (user) libraries:
-#include "flipState.h"    //  library to manage flipTurn state machine
-#include "myConstants.h"  // all constants in one file + pinout table
-#include "press_type.h"   // wrapper library further abstracting Yabl / Bounce2 switch routines
+// project constants and pin definitions
+#include "constants.h"
 
 //? ************** Selective Debug Scaffolding *********************
 // Selective debug scaffold: comment out  lines below to disable debugging tests at pre-processor stage
@@ -88,72 +82,94 @@
 // #define DEBUG 1  // uncomment to debug
 //? ************ end Selective Debug Scaffolding ********************
 
-extern const byte BLE_DELAY;       // Delay (milliseconds) to prevent BT congestion
-extern int current_battery_level;  // initially set to fully charged, 100%
+// BLE keyboard instance (initial battery level set to 100)
+BleKeyboard bleKeyboard(DEVICE_NAME, VENDOR_NAME, 100);
 
-// timer - global
-unsigned long ledTimer_msec = 0;
+// physical objects
+Bounce forwardBtn = Bounce();
+Bounce backBtn    = Bounce();
+Adafruit_MAX17048 fuelGauge;
 
-// run-once flags
-bool hasRun = 0;           // run flag to control single execution within loop
-bool flipStateHasRun = 0;  // run flag to run flipState config once
+// flag recorded after setup runs
+bool gaugePresent = false;
+
+// timer used for simple LED blink when not paired
+unsigned long ledBlinkTimer = 0;
+
+// helper that stores last reported battery percent so we don't spam BLE
+uint8_t lastBatteryPercent = 0;
 
 void setup() {
-    Serial.begin(115200);
-    delay(STARTUP_DELAY_MSEC);  // give serial monitor time to initialise to display early status messages
+    Serial.begin(SERIAL_MONITOR_SPEED);
+    delay(100);  // give debugger time to open
 
-    // flipState = battery_status;  // show battery status at power-up
-
-#ifdef DEBUG
-    Serial.println("Preparing flipTurn for BLE connection");
-#endif
-
+    // initialise BLE keyboard
     bleKeyboard.begin();
 
-    // initialise button (eg foot switch); see press_type set-up code
-    button.begin(SWITCH_PIN);
+    // configure status LED pin
+    pinMode(STATUS_LED_PIN, OUTPUT);
+    digitalWrite(STATUS_LED_PIN, LOW);
 
-}  // end setup
+    // initialise the two touch pads (wired to ground when touched, use pull‑ups)
+    pinMode(FORWARD_PIN, INPUT_PULLUP);
+    pinMode(BACK_PIN, INPUT_PULLUP);
+    forwardBtn.attach(FORWARD_PIN);
+    backBtn.attach(BACK_PIN);
+    forwardBtn.interval(25);
+    backBtn.interval(25);
+
+    // initialise I2C and fuel gauge
+    Wire.begin();
+    if (!fuelGauge.begin()) {
+        Serial.println("ERROR: MAX17048 sensor not found, check wiring");
+        // we continue running, but battery readings will stay at 0
+    } else {
+        gaugePresent = true;
+    }
+
+    Serial.println("setup() completed");
+}
 
 void loop() {
-    yield();  // let ESP32 background functions play through to avoid potential WDT reset
+    // update debounced buttons
+    forwardBtn.update();
+    backBtn.update();
 
-    // automatically show battery status on LED at device start-up
-    if (!flipStateHasRun) {  // flag ensures this runs once only
-        ledTimer_msec = millis();  // get timer mark for flipState
-        flipState = battery_status;
-#ifdef DEBUG
-        Serial.println("--------------------------");
-        Serial.print("flipStateHasRun; flipState = ");
-        Serial.println(flipState);
-        Serial.println("--------------------------");
-#endif
-        flipStateHasRun = 1;  // toggle flag to run connection notification only once
+    // forward pad pressed (falling edge)
+    if (forwardBtn.fell()) {
+        bleKeyboard.write(KEY_DOWN_ARROW);  // or KEY_RIGHT_ARROW if you prefer
+        Serial.println("forward pressed -> page forward");
     }
 
-    processState();
+    // back pad pressed
+    if (backBtn.fell()) {
+        bleKeyboard.write(KEY_UP_ARROW);  // or KEY_LEFT_ARROW
+        Serial.println("back pressed -> page backward");
+    }
 
-    // monitor switch button with response depending on designated pressTypes (Single Press, Double Press, Hold Press)
-    if (button.update()) {
-        // true = when a switch (button press) event triggered
-
-        if (button.triggered(SINGLE_TAP)) {
-            bleKeyboard.write(KEY_DOWN_ARROW);
-            Serial.println("Single Tap = Down Arrow");
-        }
-
-        else if (button.triggered(DOUBLE_TAP)) {
-            bleKeyboard.write(KEY_UP_ARROW);
-            Serial.println("Double Tap = Up Arrow");
-        }
-
-        else if (button.triggered(HOLD)) {
-            bleKeyboard.write(KEY_MEDIA_EJECT);  // toggles visibility of IOS virtual on-screen keyboard
-            ledTimer_msec = millis();            //! update times; trying to debug flipState
-            flipState = battery_status;
-
-            Serial.println("Long Press = Eject / show Battery Status Colour");
+    // periodically sample battery and push level to host
+    if (gaugePresent) {
+        float perc = fuelGauge.cellPercent();        // returns a float percentage
+        uint8_t soc = (uint8_t)perc;                 // truncate to integer for BLE
+        if (soc != lastBatteryPercent) {
+            bleKeyboard.setBatteryLevel(soc);
+            lastBatteryPercent = soc;
+            Serial.print("Battery %=");
+            Serial.println(soc);
         }
     }
 
-}  // end loop()
+    // status LED: solid when paired, blink when not
+    if (bleKeyboard.isConnected()) {
+        digitalWrite(STATUS_LED_PIN, HIGH);
+    } else {
+        unsigned long t = millis();
+        if (((t / 500) % 2) == 0) {
+            digitalWrite(STATUS_LED_PIN, HIGH);
+        } else {
+            digitalWrite(STATUS_LED_PIN, LOW);
+        }
+    }
+
+    delay(10);  // small sleep to reduce CPU usage
+}

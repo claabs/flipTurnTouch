@@ -1,28 +1,44 @@
 # flipTurnTouch
 
-flipTurn is a wireless, battery-operated / rechargeable touch operated page-turner designed to work with digital sheet music apps like MobileSheets or forScore.  Based on an ESP32-S3 microcontroller, the device uses BLE (Bluetooth Low Energy) to communicate with the app.
+This repository started life as a foot‑switch driven page‑turner; it has been forked and adapted for a two‑pad, single‑colour design using an Adafruit ESP32‑S3 Feather.
 
-My purpose for this device is to mount it to a cymbal stand on my drum kit so I can turn pages easily while playing. Capacitive touch operation is preferred so I don't need to engineer hardware strong enough to take a hit or physical press while suspended on a long lever arm.
+The hardware still emulates a BT‑105‑series Airturn device by sending simple keyboard commands over the BLE Keyboard profile, but the user interface has been changed as follows:
+
+* **Two capacitive touch pads** – one for forward (page down) and one for back (page up).
+* **Single‑colour status LED** – flashes when unpaired, stays solid when connected.
+* **Battery monitoring via an Adafruit MAX1704x LiPo fuel gauge** – percentage is reported over the BLE battery level characteristic.
+* **External reset switch** on the RESET pin is used for power‑down; firmware does not have to manage sleep.
 
 ## Operation
 
-The flipTurn page turner emulates a BT-105 series Airturn device and sends a limited set of simple keyboard commands. 
+Forward pad press sends a page‑forward key (down‑arrow by default); back pad sends a page‑back key (up‑arrow).  No special BLE pairing button is required – the controller advertises as a keyboard and the host handles any bonding.
 
-Using bluetooth, flipTurn pairs the page turner peripheral with central device (e.g. a phone or tablet).
-
-Once paired, the peripheral will automatically re-pair upon startup.
+Battery percentage is continuously updated to the central device; many music apps display this automatically once the keyboard is connected.
 
 ## Hardware
 
-* [Adafruit ESP32-S3 Feather with 4MB Flash 2MB PSRAM](https://www.adafruit.com/product/5477)
+* Adafruit ESP32‑S3 Feather with 4 MB Flash / 2 MB PSRAM
 * Rechargeable LiPo battery
-* Power toggle switch
-* Single color LED
-* Copper tape for capacitive touch operation
-* Various wire
-* Generic plastic project box that fits it all
+* Power toggle switch from RESET to GND (manual shutdown)
+* Single‑colour LED (any colour you like)
+* Two capacitive/touch pads wired to D5 and D6
+* Adafruit MAX1704x I²C LiPo monitor module
+* Copper tape, wires, project box, etc.
+
+## Wiring
+
+* **Forward touch pad** → D5 (GPIO5)
+* **Back touch pad** → D6 (GPIO6)
+* **Status LED** → D9 (GPIO9) – drive it high for on, use a suitable resistor.
+* **MAX1704x** – connect SDA/SCL to the Feather's I²C bus (default pins 21/22).  Pull‑ups are usually present on the breakout.
+* **LiPo battery** connected to the Feather's battery connector as normal.
+
+## LED Behavior
+
+* Flashing when BLE status is unpaired (500 ms on/off)
+* Solid when BLE status is actively paired
 
 ## Licence
-***Software:*** [GPL v2 Licence](./Licence-software.md)
+***Software:*** [GPL v2 Licence](./LICENSE.txt)
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0)
