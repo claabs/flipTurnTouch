@@ -20,9 +20,8 @@ Battery percentage is continuously updated to the central device; many music app
 * Adafruit ESP32‑S3 Feather with 4 MB Flash / 2 MB PSRAM
 * Rechargeable LiPo battery
 * Power toggle switch from RESET to GND (manual shutdown)
-* Single‑colour LED (any colour you like)
+* Single‑colour LED
 * Two capacitive/touch pads wired to D5 and D6
-* Adafruit MAX1704x I²C LiPo monitor module
 * Copper tape, wires, project box, etc.
 
 ## Wiring
@@ -30,7 +29,6 @@ Battery percentage is continuously updated to the central device; many music app
 * **Forward touch pad** → D5 (GPIO5)
 * **Back touch pad** → D6 (GPIO6)
 * **Status LED** → D9 (GPIO9) – drive it high for on, use a suitable resistor.
-* **MAX1704x** – connect SDA/SCL to the Feather's I²C bus (default pins 21/22).  Pull‑ups are usually present on the breakout.
 * **LiPo battery** connected to the Feather's battery connector as normal.
 
 ## LED Behavior
